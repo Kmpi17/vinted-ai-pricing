@@ -1,0 +1,23 @@
+# Dataset y archivos pesados de datos
+data/
+*.parquet
+*.csv
+*.json
+
+# Entornos virtuales de Python
+venv/
+.venv/
+env/
+
+# Caché de Python y Jupyter Notebooks
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+
+# Configuración de IDEs
+.vscode/
+.idea/
+
+# Variables de entorno y secretos
+.env
