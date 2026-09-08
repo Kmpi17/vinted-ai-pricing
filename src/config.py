@@ -1,18 +1,22 @@
 
-from pathlib import Path
 import os
+from dataclasses import dataclass
 
-# Rutas de datos
-BASE_DIR = Path(__file__).resolve().parent.parent
+@dataclass
+class Config:
+    # Rutas
+    DATA_DIR: str = os.getenv("DATA_DIR", "data")
+    PARQUET_PATH: str = os.getenv("PARQUET_PATH", "data/fashion_dataset.parquet")
+    
+    # Qdrant Config
+    QDRANT_HOST: str = os.getenv("QDRANT_HOST", "localhost")
+    QDRANT_PORT: int = int(os.getenv("QDRANT_PORT", 6333))
+    COLLECTION_NAME: str = os.getenv("COLLECTION_NAME", "fashion_products")
+    VECTOR_SIZE: int = int(os.getenv("VECTOR_SIZE", 512))
+    BATCH_SIZE: int = int(os.getenv("BATCH_SIZE", 250))
+    
+    # Spark Config
+    SPARK_APP_NAME: str = "VintedFashionDatasetPipeline"
+    SPARK_DRIVER_MEMORY: str = os.getenv("SPARK_DRIVER_MEMORY", "4g")
 
-# Ruta del Parquet
-PARQUET_PATH = str(BASE_DIR / "data" / "fashion_dataset.parquet")
-
-# Configuración de Qdrant
-QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
-QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
-COLLECTION_NAME = "fashion_items"
-VECTOR_SIZE = 512
-
-# Modelo de Embeddings
-CLIP_MODEL_ID = "openai/clip-vit-base-patch32"
+config = Config()

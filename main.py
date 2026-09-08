@@ -1,33 +1,41 @@
-from pyspark.sql import SparkSession
-from src import config
-from src.reader.batch_reader import read_parquet_batch
-from src.extraction.feature_extractor import add_image_embeddings
-from src.loader.qdrant_writer import write_to_qdrant
+import sys
+from src.config import config
+from src.reader.reader import download_and_read_parquet
+from src.extraction.extractor import prepare_qdrant_points
+from src.loader.loader import QdrantLoader
 
 def main():
-    print("🚀 Iniciando Pipeline ETL Moda Multimodal...")
+    print("🚀 Iniciando Pipeline ETL de Spark a Qdrant...")
 
-    # 1. Crear sesión de PySpark
-    spark = SparkSession.builder \
-        .appName("VintedMultimodalIndexing") \
-        .config("spark.driver.memory", "4g") \
-        .getOrCreate()
+    # 1. Reader: Descargar Parquet y cargar DataFrame en PySpark
+    spark, df_spark = download_and_read_parquet(
+        target_path=config.PARQUET_PATH,
+        app_name=config.SPARK_APP_NAME
+    )
 
-    # 2. Leer Parquet limpio
-    df = read_parquet_batch(spark, config.PARQUET_PATH)
+    try:
+        # 2. Extraction: Transformación de datos y generación de embeddings
+        points = prepare_qdrant_points(df_spark)
 
-    # Si quieres hacer una prueba rápida antes de procesar los 22k registros,
-    # descomenta la siguiente línea para probar solo con 100 elementos:
-    # df = df.limit(100)
+        # 3. Loader: Carga masiva en Qdrant por lotes
+        loader = QdrantLoader(host=config.QDRANT_HOST, port=config.QDRANT_PORT)
+        loader.init_collection(
+            collection_name=config.COLLECTION_NAME, 
+            vector_size=config.VECTOR_SIZE
+        )
+        loader.load_in_batches(
+            collection_name=config.COLLECTION_NAME, 
+            points=points, 
+            batch_size=config.BATCH_SIZE
+        )
 
-    # 3. Generar Embeddings con CLIP
-    print("--> Generando embeddings multimodales...")
-    df_vectorized = add_image_embeddings(df)
-
-    # 4. Insertar en Qdrant
-    write_to_qdrant(df_vectorized)
-
-    print("🎉 Pipeline finalizado con éxito.")
+    except Exception as e:
+        print(f"❌ Error durante la ejecución del pipeline: {e}", file=sys.stderr)
+        raise e
+    finally:
+        # Cerrar siempre la sesión de Spark limpia al finalizar
+        spark.stop()
+        print("🛑 Sesión de PySpark finalizada.")
 
 if __name__ == "__main__":
     main()

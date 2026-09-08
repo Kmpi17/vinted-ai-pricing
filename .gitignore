@@ -21,3 +21,6 @@ __pycache__/
 
 # Variables de entorno y secretos
 .env
+
+# Qdrant base de datos
+qdrant_storage/
