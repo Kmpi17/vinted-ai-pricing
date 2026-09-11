@@ -1,14 +1,30 @@
 from typing import List
 from qdrant_client.models import PointStruct
+from transformers import CLIPModel, CLIPProcessor
 import uuid
+import torch
 
-def generate_embedding(text: str) -> List[float]:
-    """
-    Sustituye esta función con la llamada a tu modelo real 
-    (ej. SentenceTransformers, CLIP o API de embeddings).
-    """
-    # Dimensión de ejemplo de 512 (estándar de modelos multimodal/CLIP)
-    return [0.05] * 512  
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
+processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+model.eval()
+
+def generate_embedding(text: str) -> list[float]:
+    """Genera un embedding de texto real de 512 dimensiones usando CLIP."""
+    with torch.no_grad():
+        inputs = processor(text=[text], return_tensors="pt", padding=True, truncation=True).to(device)
+        text_outputs = model.get_text_features(**inputs)
+        
+        # Extraer tensor y normalizar L2
+        if hasattr(text_outputs, "text_embeds"):
+            text_features = text_outputs.text_embeds
+        elif hasattr(text_outputs, "pooler_output"):
+            text_features = text_outputs.pooler_output
+        else:
+            text_features = text_outputs
+            
+        text_features = text_features / text_features.norm(p=2, dim=-1, keepdim=True)
+        return text_features[0].cpu().numpy().tolist()
 
 def prepare_qdrant_points(df_spark) -> List[PointStruct]:
     """
