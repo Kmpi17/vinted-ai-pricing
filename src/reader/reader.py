@@ -1,23 +1,23 @@
 import os
 import requests
+import sys
 from tqdm import tqdm
 from pyspark.sql import SparkSession, DataFrame
 
 def download_and_read_parquet(
     target_path: str = "data/fashion_dataset.parquet",
-    app_name: str = "FashionDatasetReader"
+    dataset_url: str = "https://huggingface.co/api/datasets/perinim/deepfashion2/parquet/default/train",
+    app_name: str = "DeepFashionSparkReader"
 ) -> tuple[SparkSession, DataFrame]:
-    """
-    Descarga el dataset de Hugging Face si no existe localmente
-    y lo carga en una sesión de PySpark.
-    """
+
+    os.environ['PYSPARK_PYTHON'] = sys.executable
+    os.environ['PYSPARK_DRIVER_PYTHON'] = sys.executable
     os.makedirs(os.path.dirname(target_path), exist_ok=True)
 
     if not os.path.exists(target_path):
-        api_url = "https://huggingface.co/api/datasets/ashraq/fashion-product-images-small/parquet/default/train"
         print("--> Consultando endpoint de Hugging Face...")
-        res = requests.get(api_url).json()
-        parquet_direct_url = res[0]
+        res = requests.get(dataset_url).json()
+        parquet_direct_url = res[0] if isinstance(res, list) else res
 
         print(f"--> Descargando Parquet desde: {parquet_direct_url}")
         response = requests.get(parquet_direct_url, stream=True)
@@ -39,10 +39,12 @@ def download_and_read_parquet(
     else:
         print(f"--> Archivo encontrado en caché local: {target_path}")
 
-    # Inicializar Spark
     spark = SparkSession.builder \
         .appName(app_name) \
         .config("spark.driver.memory", "4g") \
+        .config("spark.executor.memory", "4g") \
+        .config("spark.sql.execution.arrow.maxRecordsPerBatch", "256") \
+        .config("spark.sql.execution.pyspark.udf.faulthandler.enabled", "true") \
         .getOrCreate()
 
     print("--> Cargando Parquet en PySpark...")

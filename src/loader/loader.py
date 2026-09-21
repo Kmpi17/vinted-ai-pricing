@@ -6,14 +6,14 @@ class QdrantLoader:
     def __init__(self, host: str = "localhost", port: int = 6333, api_key: str = None):
         self.client = QdrantClient(host=host, port=port, api_key=api_key)
 
-    def init_collection(self, collection_name: str, vector_size: int):
-        """Crea la colección en Qdrant si aún no existe."""
+    def init_collection(self, collection_name: str, vector_size: int = 512, force_recreate: bool = False):
+        """Inicializa o recrea la colección en Qdrant."""
         collections = self.client.get_collections().collections
         exists = any(c.name == collection_name for c in collections)
 
-        if not exists:
-            print(f"--> Creando colección '{collection_name}' (dimensión: {vector_size})...")
-            self.client.create_collection(
+        if force_recreate or not exists:
+            print(f"--> Creando/Recreando colección '{collection_name}' (dimensión: {vector_size})...")
+            self.client.recreate_collection(
                 collection_name=collection_name,
                 vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE)
             )
@@ -21,7 +21,7 @@ class QdrantLoader:
             print(f"--> La colección '{collection_name}' ya existe.")
 
     def load_in_batches(self, collection_name: str, points: List[PointStruct], batch_size: int = 250):
-        """Inserción de puntos en lotes a Qdrant."""
+        """Inserción de puntos en lotes utilizando el método upsert."""
         total = len(points)
         print(f"--> Subiendo {total} puntos en lotes de {batch_size}...")
 
@@ -31,6 +31,6 @@ class QdrantLoader:
                 collection_name=collection_name,
                 points=batch
             )
-            print(f"   Lote {i // batch_size + 1} enviado ({min(i + batch_size, total)}/{total})")
+            print(f"   [+] Lote {i // batch_size + 1} enviado ({min(i + batch_size, total)}/{total})")
 
-        print("✅ Inserción completada con éxito.")
+        print("✅ Inserción en Qdrant completada con éxito.")
