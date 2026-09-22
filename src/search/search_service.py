@@ -1,92 +1,128 @@
-import io
-import torch
-from PIL import Image
-from transformers import CLIPModel, CLIPProcessor
+from typing import List, Optional, Dict, Any
 from qdrant_client import QdrantClient
-from qdrant_client.http import models as qmodels
+from qdrant_client.models import Filter, FieldCondition, MatchText, MatchValue
+
+from src.extraction.extractor import CLIPExtractor
 from src.config import config
+
 
 class SearchService:
     def __init__(self):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        print(f"--> Inicializando SearchService en dispositivo: {self.device}")
-        
-        clip_model_id = getattr(config, "CLIP_MODEL_ID", "openai/clip-vit-base-patch32")
-        self.model = CLIPModel.from_pretrained(clip_model_id).to(self.device)
-        self.processor = CLIPProcessor.from_pretrained(clip_model_id)
-        self.model.eval()
+        self.extractor = CLIPExtractor()
+        self.qdrant_client = QdrantClient(
+            host=getattr(config, "QDRANT_HOST", "localhost"),
+            port=getattr(config, "QDRANT_PORT", 6333)
+        )
+        self.collection_name = getattr(config, "COLLECTION_NAME", "fashion_products")
 
-        self.client = QdrantClient(host=config.QDRANT_HOST, port=config.QDRANT_PORT)
+    def _extract_hits(self, response: Any) -> List[Any]:
+        """Extrae la lista de puntos independientemente de si Qdrant devuelve un QueryResponse o una tupla."""
+        if hasattr(response, "points"):
+            return response.points
+        elif isinstance(response, tuple):
+            return response[0]
+        return response
 
-    def search_by_text(self, text: str, limit: int = 10, category: str = None, gender: str = None):
-        with torch.no_grad():
-            inputs = self.processor(text=[text], return_tensors="pt", padding=True).to(self.device)
-            outputs = self.model.get_text_features(**inputs)
-            
-            # Si outputs es un objeto BaseModelOutput, extraemos el tensor
-            if hasattr(outputs, "text_embeds"):
-                text_features = outputs.text_embeds
-            elif hasattr(outputs, "pooler_output"):
-                text_features = outputs.pooler_output
-            elif isinstance(outputs, torch.Tensor):
-                text_features = outputs
-            else:
-                text_features = outputs[0]
-
-            # Normalizar vector L2
-            text_features = text_features / text_features.norm(p=2, dim=-1, keepdim=True)
-            query_vector = text_features[0].cpu().numpy().tolist()
-
-        return self._query_qdrant(query_vector, limit, category, gender)
-
-    def search_by_image(self, image_bytes: bytes, limit: int = 10, category: str = None, gender: str = None):
-        with torch.no_grad():
-            image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-            inputs = self.processor(images=image, return_tensors="pt").to(self.device)
-            outputs = self.model.get_image_features(**inputs)
-            
-            if hasattr(outputs, "image_embeds"):
-                image_features = outputs.image_embeds
-            elif hasattr(outputs, "pooler_output"):
-                image_features = outputs.pooler_output
-            elif isinstance(outputs, torch.Tensor):
-                image_features = outputs
-            else:
-                image_features = outputs[0]
-
-            # Normalizar vector L2
-            image_features = image_features / image_features.norm(p=2, dim=-1, keepdim=True)
-            query_vector = image_features[0].cpu().numpy().tolist()
-
-        return self._query_qdrant(query_vector, limit, category, gender)
-
-    def _query_qdrant(self, vector: list, limit: int, category: str = None, gender: str = None):
-        must_filters = []
-        
+    def _build_metadata_filters(self, category: Optional[str] = None, gender: Optional[str] = None) -> List[FieldCondition]:
+        must_conditions = []
         if category:
-            must_filters.append(
-                qmodels.FieldCondition(
-                    key="masterCategory",
-                    match=qmodels.MatchValue(value=category)
-                )
+            must_conditions.append(
+                FieldCondition(key="articleType", match=MatchValue(value=category))
             )
         if gender:
-            must_filters.append(
-                qmodels.FieldCondition(
-                    key="gender",
-                    match=qmodels.MatchValue(value=gender)
-                )
+            must_conditions.append(
+                FieldCondition(key="gender", match=MatchValue(value=gender))
             )
+        return must_conditions
 
-        query_filter = qmodels.Filter(must=must_filters) if must_filters else None
+    def search_by_text(
+        self, 
+        text: str, 
+        limit: int = 10, 
+        category: Optional[str] = None, 
+        gender: Optional[str] = None,
+        score_threshold: float = 0.62
+    ) -> List[Dict[str, Any]]:
+        query_vector = self.extractor.generate_text_embedding(text)
+        base_must = self._build_metadata_filters(category, gender)
 
-        # API moderna de Qdrant client (reemplaza a self.client.search)
-        response = self.client.query_points(
-            collection_name=config.COLLECTION_NAME,
-            query=vector,
-            query_filter=query_filter,
-            limit=limit
+        # 1. Búsqueda híbrida con coincidencia léxica
+        hybrid_filter = Filter(
+            must=base_must,
+            should=[
+                FieldCondition(
+                    key="productDisplayName",
+                    match=MatchText(text=text)
+                )
+            ]
         )
+
+        exact_response = self.qdrant_client.query_points(
+            collection_name=self.collection_name,
+            query=query_vector,
+            query_filter=hybrid_filter,
+            limit=limit,
+            score_threshold=score_threshold
+        )
+        exact_hits = self._extract_hits(exact_response)
+
+        found_ids = {hit.id for hit in exact_hits}
+        results = [
+            {
+                "id": hit.id,
+                "score": round(hit.score, 4),
+                "payload": hit.payload
+            }
+            for hit in exact_hits
+        ]
+
+        # 2. Fallback semántico si se necesitan más resultados
+        if len(results) < limit:
+            semantic_filter = Filter(must=base_must) if base_must else None
+
+            semantic_response = self.qdrant_client.query_points(
+                collection_name=self.collection_name,
+                query=query_vector,
+                query_filter=semantic_filter,
+                limit=limit,
+                score_threshold=score_threshold
+            )
+            semantic_hits = self._extract_hits(semantic_response)
+
+            for hit in semantic_hits:
+                if hit.id not in found_ids:
+                    results.append({
+                        "id": hit.id,
+                        "score": round(hit.score, 4),
+                        "payload": hit.payload
+                    })
+                    found_ids.add(hit.id)
+                    if len(results) == limit:
+                        break
+
+        return results
+
+    def search_by_image(
+        self, 
+        image_bytes: bytes, 
+        limit: int = 10, 
+        category: Optional[str] = None, 
+        gender: Optional[str] = None,
+        score_threshold: float = 0.60
+    ) -> List[Dict[str, Any]]:
+        query_vector = self.extractor.generate_image_embedding(image_bytes)
+
+        base_must = self._build_metadata_filters(category, gender)
+        image_filter = Filter(must=base_must) if base_must else None
+
+        response = self.qdrant_client.query_points(
+            collection_name=self.collection_name,
+            query=query_vector,
+            query_filter=image_filter,
+            limit=limit,
+            score_threshold=score_threshold
+        )
+        hits = self._extract_hits(response)
 
         return [
             {
@@ -94,5 +130,5 @@ class SearchService:
                 "score": round(hit.score, 4),
                 "payload": hit.payload
             }
-            for hit in response.points
+            for hit in hits
         ]
